@@ -101,24 +101,19 @@ func (l *FileLogger) Fire(entry *logrus.Entry) error {
 	return err
 }
 
-func (l *FileLogger) rotationPath(t *time.Time, timeRotation bool, sizeRotation bool) (file string) {
+func (l *FileLogger) rotationPath(t *time.Time) (file string) {
 	file = l.filepath
-	if timeRotation {
+	if len(l.rotation.format) > 0 {
 		file = file + "." + t.Format(l.rotation.format)
 	}
-	if sizeRotation {
-		num := l.rotation.num
-		if num == 0 {
-			num = 1
-		}
+	if l.rotation.size > 0 {
+		num := 1
 
 		for {
 			name := fmt.Sprintf("%s.%d", file, num)
-
 			if _, err := os.Stat(name); err == nil { // exist
 				num++
 			} else {
-				l.rotation.num = num
 				file = name
 				break
 			}
@@ -142,12 +137,12 @@ func (l *FileLogger) rotate(t *time.Time) error {
 
 	stat, err := l.fd.Stat()
 	if err == nil {
-		timeRotation = format != "" && stat.ModTime().Format(format) != t.Format(format)
+		timeRotation = !(format == "" || stat.ModTime().Format(format) == t.Format(format))
 		sizeRotation = size > 0 && stat.Size() >= size
 
 		if timeRotation || sizeRotation {
 			modTime := stat.ModTime()
-			rotationPath := l.rotationPath(&modTime, timeRotation, sizeRotation)
+			rotationPath := l.rotationPath(&modTime)
 			err = os.Rename(l.filepath, rotationPath)
 			if err == nil { // rename successfully
 				err = l.openFile()

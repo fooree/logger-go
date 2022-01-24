@@ -11,7 +11,7 @@ func TestNewFileLogger(t *testing.T) {
 	filepath := "test/test.log"
 	fileLogger, err := NewFileLogger(filepath,
 		WithRotationFormat(MinuteFormat),
-		WithRotationSize(20<<1),
+		WithRotationSize(100),
 		WithRotationCount(5),
 		WithRotationMaxAge(3*time.Minute),
 	)
@@ -24,7 +24,7 @@ func TestNewFileLogger(t *testing.T) {
 		)
 		for i := 0; i < 10; i++ {
 			logger.InfoF(context.Background(), "%s file logger", "hello")
-			time.Sleep(time.Minute)
+			time.Sleep(time.Second * 3)
 		}
 
 	} else {
