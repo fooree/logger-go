@@ -16,8 +16,8 @@ func TestNew(t *testing.T) {
 			WithLevel(logrus.InfoLevel),
 			WithWriter(os.Stdout),
 			WithWriter(file),
-			WithFormatter(new(logrus.JSONFormatter)),
-			WithFields(logrus.Fields{"name": "Jack", "project": "auto-math"}),
+			//WithFormatter(new(logrus.JSONFormatter)),
+			//WithFields(logrus.Fields{"name": "Jack", "project": "auto-math"}),
 		).AsStandardLogger()
 		logrus.Infof("%s", "hello")
 		log.Println("hello world")

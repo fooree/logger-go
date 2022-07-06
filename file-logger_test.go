@@ -1,34 +1,35 @@
 package glog
 
 import (
-	"context"
-	"os"
+	"github.com/sirupsen/logrus"
 	"testing"
 	"time"
 )
 
 func TestNewFileLogger(t *testing.T) {
 	filepath := "test/test.log"
+	logg := &logrus.Logger{
+		Level: logrus.InfoLevel,
+	}
 	fileLogger, err := NewFileLogger(filepath,
+		logg,
 		WithRotationFormat(MinuteFormat),
 		WithRotationSize(100),
 		WithRotationCount(5),
 		WithRotationMaxAge(3*time.Minute),
+		WithFields(logrus.Fields{"额外信息": "信息数据"}),
 	)
 	if err == nil {
 
 		defer func() { _ = fileLogger.Close() }()
-		logger := New(
-			WithWriter(os.Stderr),
-			WithHook(fileLogger),
-		)
+
 		for i := 0; i < 10; i++ {
-			logger.InfoF(context.Background(), "%s file logger", "hello")
-			time.Sleep(time.Second * 3)
+			logg.Infof("%s file logger", "hello")
+			//time.Sleep(time.Second * 3)
 		}
 
 	} else {
-		t.Errorf("new file logger error: %w", err)
+		t.Errorf("new file logger error: %v", err)
 	}
 
 }

@@ -1,6 +1,7 @@
 package glog
 
 import (
+	"encoding/binary"
 	"fmt"
 	"github.com/sirupsen/logrus"
 	"os"
@@ -9,15 +10,17 @@ import (
 	"sort"
 	"sync"
 	"time"
+	"unsafe"
 )
 
-const lf = "\n"
 const DateFormat = "2006-01-02"
 const HourFormat = "2006-01-02-15"
 const MinuteFormat = "2006-01-02-15-04"
+const datetimeFormat = "2006-01-02 15:04:05"
 
 var _ = DateFormat
 var _ = HourFormat
+var _ = datetimeFormat
 
 type rotation struct {
 	size     int64
@@ -28,39 +31,64 @@ type rotation struct {
 	maxAge time.Duration
 
 	compress bool
-	num      uint
 }
 
 type FileLogger struct {
-	filepath string
-	mu       sync.Mutex
-	fd       *os.File
-	rotation rotation
+	filepath  string
+	mu        sync.Mutex
+	rotation  rotation
+	file      *os.File
+	logger    *logrus.Logger
+	extra     logrus.Fields
+	formatter logrus.Formatter
 }
 
-func NewFileLogger(filePath string, opts ...FileOption) (l *FileLogger, err error) {
-	l = &FileLogger{}
-	l.filepath, err = filepath.Abs(filePath)
+func NewFileLogger(filePath string, logger *logrus.Logger, opts ...FileOption) (fl *FileLogger, err error) {
+	fl = &FileLogger{logger: logger}
+	fl.filepath, err = filepath.Abs(filePath)
 	if err == nil {
 		for _, opt := range opts {
-			opt(l)
+			opt(fl)
 		}
 
-		err = l.openFile()
+		err = fl.open()
 	}
 
-	return l, err
+	if err == nil {
+		if fl.logger.Formatter == nil {
+			fl.formatter = &logrus.JSONFormatter{}
+		} else {
+			fl.formatter = fl.logger.Formatter
+		}
+		fl.logger.SetFormatter(fl)
+
+		if fl.logger.Hooks == nil {
+			fl.logger.Hooks = make(logrus.LevelHooks)
+		}
+		fl.logger.AddHook(fl)
+
+		fl.logger.SetOutput(fl)
+	}
+
+	return fl, err
 }
 
-func (l *FileLogger) openFile() (err error) {
-	file, err := l.open()
+func (l *FileLogger) open() (err error) {
+	file, err := l.openFile()
 	if err == nil {
-		l.set(file)
+		prev := l.file
+		l.file = file
+		if prev == nil {
+			// init
+		} else {
+			// rotation
+			_ = prev.Close()
+		}
 	}
 	return
 }
 
-func (l *FileLogger) open() (file *os.File, err error) {
+func (l *FileLogger) openFile() (file *os.File, err error) {
 	err = os.MkdirAll(path.Dir(l.filepath), 0755)
 	if err == nil {
 		file, err = os.OpenFile(l.filepath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0666)
@@ -68,37 +96,56 @@ func (l *FileLogger) open() (file *os.File, err error) {
 	return
 }
 
-func (l *FileLogger) set(fd *os.File) {
-	prev := l.fd
-	if prev == nil {
-		// init
-	} else { // rotation
-		defer func() { _ = prev.Close() }()
-	}
-	l.fd = fd
-	return
-}
-
 func (l *FileLogger) Levels() []logrus.Level {
 	return logrus.AllLevels
 }
 
-func (l *FileLogger) Fire(entry *logrus.Entry) error {
+//func (l *FileLogger) Fire(entry *logrus.Entry) error {
+//	l.mu.Lock()
+//	defer l.mu.Unlock()
+//
+//	if err := l.rotate(&entry.Time); err != nil {
+//		_, _ = fmt.Fprintf(os.Stderr, "rotation failure, error=%v", err)
+//	}
+//
+//	data, err := entry.Bytes() // performance issue !!!
+//	if err == nil {
+//		_, err = l.file.Write(data)
+//		if err == nil {
+//			_, err = l.file.WriteString(lf)
+//		}
+//	}
+//	return err
+//}
+
+func (l *FileLogger) Format(entry *logrus.Entry) ([]byte, error) {
+	var buf [8]byte
+	binary.LittleEndian.PutUint64(buf[:], uint64(entry.Time.Unix()))
+	entry.Buffer.Write(buf[:])
+	return l.formatter.Format(entry)
+}
+
+func (l *FileLogger) Fire(entry *logrus.Entry) (e error) {
+	if len(l.extra) > 0 {
+		entry.Data = entry.WithFields(l.extra).Data
+	}
+	return
+}
+
+func (l *FileLogger) Write(data []byte) (n int, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if err := l.rotate(&entry.Time); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "rotation failure, error=%v", err)
+	size := unsafe.Sizeof(uint64(0))
+	unix := binary.LittleEndian.Uint64(data)
+	date := time.Unix(int64(unix), 0)
+	//fmt.Println(date.Format(datetimeFormat))
+
+	if e := l.rotate(&date); e != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "rotation failure, error=%v", e)
 	}
 
-	data, err := entry.Bytes() // performance issue !!!
-	if err == nil {
-		_, err = l.fd.Write(data)
-		if err == nil {
-			_, err = l.fd.WriteString(lf)
-		}
-	}
-	return err
+	return l.file.Write(data[size:])
 }
 
 func (l *FileLogger) rotationPath(t *time.Time) (file string) {
@@ -135,7 +182,7 @@ func (l *FileLogger) rotate(t *time.Time) error {
 		return nil
 	}
 
-	stat, err := l.fd.Stat()
+	stat, err := l.file.Stat()
 	if err == nil {
 		timeRotation = !(format == "" || stat.ModTime().Format(format) == t.Format(format))
 		sizeRotation = size > 0 && stat.Size() >= size
@@ -143,9 +190,10 @@ func (l *FileLogger) rotate(t *time.Time) error {
 		if timeRotation || sizeRotation {
 			modTime := stat.ModTime()
 			rotationPath := l.rotationPath(&modTime)
+			_ = l.file.Close()
 			err = os.Rename(l.filepath, rotationPath)
 			if err == nil { // rename successfully
-				err = l.openFile()
+				err = l.open()
 				if err == nil {
 					go l.afterRotate(rotationPath)
 				}
@@ -157,12 +205,13 @@ func (l *FileLogger) rotate(t *time.Time) error {
 }
 
 func (l *FileLogger) Close() error {
-	return l.fd.Close()
+	return l.file.Close()
 }
 
 func (l *FileLogger) afterRotate(rotationPath string) {
 	if l.rotation.compress {
 		// todo compress
+		fmt.Println(rotationPath)
 	}
 	maxAge := l.rotation.maxAge
 	maxCount := l.rotation.maxCount

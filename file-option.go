@@ -1,6 +1,9 @@
 package glog
 
-import "time"
+import (
+	"github.com/sirupsen/logrus"
+	"time"
+)
 
 const (
 	KB uint64 = 1024
@@ -15,6 +18,7 @@ var _ = WithRotationCount
 var _ = WithRotationMaxAge
 var _ = WithRotationFormat
 var _ = WithRotationSize
+var _ = WithFormatter
 
 type FileOption func(*FileLogger)
 
@@ -42,5 +46,17 @@ func WithRotationMaxAge(maxAge time.Duration) FileOption {
 func WithRotationFormat(format string) FileOption {
 	return func(l *FileLogger) {
 		l.rotation.format = format
+	}
+}
+
+func WithFormatter(formatter logrus.Formatter) FileOption {
+	return func(l *FileLogger) {
+		l.logger.Formatter = formatter
+	}
+}
+
+func WithFields(fields logrus.Fields) FileOption {
+	return func(l *FileLogger) {
+		l.extra = fields
 	}
 }
